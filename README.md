@@ -1,0 +1,124 @@
+# Laya Internal Inference API
+
+This project keeps one Laya checkpoint resident and exposes its typed
+System-One decisions over HTTP. The service defaults to the English
+`convaiinnovations/laya` checkpoint on CPU so it does not compete with Ollama
+for GPU memory.
+
+## Endpoints
+
+- `GET /health` — process liveness; no authentication required
+- `GET /ready` — model readiness; no authentication required
+- `GET /v1/model-info` — loaded checkpoint and runtime information
+- `POST /v1/systemone` — Laya-compatible typed inference
+- `POST /v1/evaluate` — compatibility alias for `/v1/systemone`
+- `GET /docs` — interactive OpenAPI documentation
+
+All `/v1` endpoints require `Authorization: Bearer ...` when `LAYA_API_KEY` is
+set.
+
+## Request example
+
+```json
+{
+  "state": {
+    "subject": "Duplicate charge",
+    "body": "Please refund the second charge or we will cancel."
+  },
+  "questions": {
+    "department": {
+      "type": "choice",
+      "instructions": "Which team should handle this request?",
+      "criteria": {
+        "billing": "invoices, payments, refunds",
+        "technical": "bugs, outages, integrations",
+        "sales": "pricing and new purchases",
+        "other": "everything else"
+      }
+    },
+    "churn_risk": {
+      "type": "noul",
+      "instructions": "Does the customer threaten to cancel?"
+    }
+  }
+}
+```
+
+## Development
+
+```bash
+uv sync --group dev
+uv run pytest
+LAYA_DEVICE=cpu uv run uvicorn server:app --host 127.0.0.1 --port 8000
+```
+
+The model is loaded during application startup. Do not enable Uvicorn reload in
+production because every reload reconstructs the model.
+
+Run the external HTTP load test after the service is ready:
+
+```bash
+uv run python scripts/benchmark_api.py --requests 40 --concurrency 8
+```
+
+## Configuration
+
+The service reads these environment variables:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `LAYA_MODEL` | `convaiinnovations/laya` | Hub ID or local checkpoint path |
+| `LAYA_SUBFOLDER` | unset | Optional bundled checkpoint subfolder |
+| `LAYA_DEVICE` | `cpu` | PyTorch device |
+| `LAYA_API_KEY` | unset | Bearer token protecting `/v1` |
+| `LAYA_CONCURRENCY` | `1` | Simultaneous model calls per process |
+| `LAYA_QUEUE_CAPACITY` | `64` | Waiting requests per process |
+| `LAYA_QUEUE_TIMEOUT_SECONDS` | `30` | Maximum queue wait |
+| `LAYA_TORCH_THREADS` | `12` | CPU threads used by this process |
+
+For CPU serving, change process count and PyTorch thread count together. For
+example, two Uvicorn workers should start near six Torch threads each to avoid
+oversubscribing the 12 physical CPU cores. Benchmark before increasing either.
+
+### Example CPU baseline
+
+Measured on the 12-core Ryzen 9 7900X with the two-question fixture in
+`tests/fixtures/request.json` and eight concurrent clients:
+
+| Processes | Torch threads/process | Requests/second | P50 latency | P95 latency |
+|---:|---:|---:|---:|---:|
+| 1 | 12 | 7.185 | 1,110 ms | 1,118 ms |
+| 2 | 6 | 6.876 | 1,126 ms | 1,189 ms |
+| 4 | 3 | 3.732 | 1,419 ms | 3,389 ms |
+
+One process is the measured production default. A single warm request took
+143 ms; the higher concurrent latency above includes queueing behind the one
+resident model.
+
+## systemd user service
+
+The unit in `deploy/laya-api.service` binds to port 8000 with one process and 12
+Torch threads. Install and start it with:
+
+```bash
+systemctl --user link "$HOME/laya-server/deploy/laya-api.service"
+systemctl --user daemon-reload
+systemctl --user enable --now laya-api.service
+```
+
+To keep the user service running after logout and across reboots, an
+administrator must enable lingering once:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+## Calling the service
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $LAYA_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data @request.json \
+  http://127.0.0.1:8000/v1/systemone
+```

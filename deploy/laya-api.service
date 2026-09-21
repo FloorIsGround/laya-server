@@ -1,0 +1,31 @@
+[Unit]
+Description=Laya internal inference API
+Documentation=file:%h/laya/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/laya
+EnvironmentFile=-%h/laya/.env
+Environment=HF_HUB_DISABLE_TELEMETRY=1
+Environment=TOKENIZERS_PARALLELISM=false
+Environment=USE_TF=0
+Environment=USE_TORCH=1
+Environment=LAYA_DEVICE=cpu
+Environment=LAYA_CONCURRENCY=1
+Environment=LAYA_QUEUE_CAPACITY=64
+Environment=LAYA_QUEUE_TIMEOUT_SECONDS=30
+Environment=LAYA_TORCH_THREADS=12
+ExecStart=%h/laya/.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=default.target

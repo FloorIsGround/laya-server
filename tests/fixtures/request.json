@@ -1,0 +1,22 @@
+{
+  "state": {
+    "subject": "Duplicate charge",
+    "body": "Please refund the second charge or we will cancel."
+  },
+  "questions": {
+    "department": {
+      "type": "choice",
+      "instructions": "Which team should handle this request?",
+      "criteria": {
+        "billing": "invoices, payments, refunds",
+        "technical": "bugs, outages, integrations",
+        "sales": "pricing and new purchases",
+        "other": "everything else"
+      }
+    },
+    "churn_risk": {
+      "type": "noul",
+      "instructions": "Does the customer threaten to cancel?"
+    }
+  }
+}
