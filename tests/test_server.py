@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+import httpx
+import pytest
 
 import server
 
@@ -47,44 +48,80 @@ def inference_request():
     }
 
 
-def test_health_and_readiness(monkeypatch):
+def client():
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=server.app),
+        base_url="http://testserver",
+    )
+
+
+@pytest.mark.anyio
+async def test_health_and_readiness(monkeypatch):
     monkeypatch.setattr(server.runtime, "agent", None)
-    client = TestClient(server.app)
-    assert client.get("/health").json() == {"status": "ok"}
-    response = client.get("/ready")
-    assert response.status_code == 503
-    assert response.json() == {"status": "loading"}
+    async with client() as test_client:
+        assert (await test_client.get("/health")).json() == {"status": "ok"}
+        response = await test_client.get("/ready")
+        assert response.status_code == 503
+        assert response.json() == {"status": "loading"}
 
 
-def test_system_one(monkeypatch):
+@pytest.mark.anyio
+async def test_system_one(monkeypatch):
     monkeypatch.setattr(server.runtime, "agent", FakeAgent())
     monkeypatch.setattr(server.runtime, "executor", server.ThreadPoolExecutor(1))
     monkeypatch.setattr(server.runtime, "execution_slots", server.asyncio.Semaphore(1))
     monkeypatch.setattr(server.runtime, "admission_slots", server.asyncio.Semaphore(2))
-    client = TestClient(server.app)
-    response = client.post("/v1/systemone", json=inference_request())
+    async with client() as test_client:
+        response = await test_client.post("/v1/systemone", json=inference_request())
     server.runtime.executor.shutdown()
     assert response.status_code == 200
     assert response.json()["answers"]["route"]["choice"] == "billing"
 
 
-def test_rejects_invalid_choice():
-    client = TestClient(server.app)
+@pytest.mark.anyio
+async def test_rejects_invalid_choice():
     payload = inference_request()
     payload["questions"]["route"]["criteria"] = {"only": "one option"}
-    response = client.post("/v1/systemone", json=payload)
+    async with client() as test_client:
+        response = await test_client.post("/v1/systemone", json=payload)
     assert response.status_code == 422
 
 
-def test_api_key(monkeypatch):
+@pytest.mark.anyio
+async def test_api_key(monkeypatch):
     monkeypatch.setattr(server.settings, "api_key", "test-secret")
-    client = TestClient(server.app)
-    assert client.get("/v1/model-info").status_code == 401
-
     monkeypatch.setattr(server.runtime, "agent", FakeAgent())
-    response = client.get(
-        "/v1/model-info",
-        headers={"Authorization": "Bearer test-secret"},
-    )
-    assert response.status_code == 200
-    assert response.json()["max_context"] == 512
+    async with client() as test_client:
+        assert (await test_client.get("/v1/model-info")).status_code == 401
+
+        bearer_response = await test_client.get(
+            "/v1/model-info",
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert bearer_response.status_code == 200
+        assert bearer_response.json()["max_context"] == 512
+
+        header_response = await test_client.get(
+            "/v1/model-info",
+            headers={"X-API-Key": "test-secret"},
+        )
+        assert header_response.status_code == 200
+
+
+def test_openapi_exposes_auth_controls():
+    schema = server.app.openapi()
+    schemes = schema["components"]["securitySchemes"]
+    assert schemes["BearerAuth"] == {
+        "type": "http",
+        "description": "Enter the Laya API token without the `Bearer` prefix.",
+        "scheme": "bearer",
+    }
+    assert schemes["ApiKeyAuth"] == {
+        "type": "apiKey",
+        "description": "Enter the Laya API token.",
+        "in": "header",
+        "name": "X-API-Key",
+    }
+    security = schema["paths"]["/v1/systemone"]["post"]["security"]
+    assert {"BearerAuth": []} in security
+    assert {"ApiKeyAuth": []} in security

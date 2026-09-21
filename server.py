@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 import laya
 import torch
 from fastapi import Depends, FastAPI, HTTPException, Response, Security, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 LOGGER = logging.getLogger("laya.api")
@@ -184,20 +184,41 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="Laya Internal Inference API",
     version="1.0.0",
+    description=(
+        "Open **Authorize** and enter the token under either `BearerAuth` "
+        "(token only, without the `Bearer` prefix) or `ApiKeyAuth`. "
+        "The same token works in the `Authorization: Bearer ...` and "
+        "`X-API-Key: ...` headers."
+    ),
     lifespan=lifespan,
+    swagger_ui_parameters={"persistAuthorization": True},
 )
-bearer = HTTPBearer(auto_error=False)
+bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="BearerAuth",
+    description="Enter the Laya API token without the `Bearer` prefix.",
+)
+api_key_header = APIKeyHeader(
+    name="X-API-Key",
+    auto_error=False,
+    scheme_name="ApiKeyAuth",
+    description="Enter the Laya API token.",
+)
 
 
-def require_api_key(
+async def require_api_key(
     credentials: HTTPAuthorizationCredentials | None = Security(bearer),
+    api_key: str | None = Security(api_key_header),
 ) -> None:
     if settings.api_key is None:
         return
-    supplied = credentials.credentials if credentials is not None else ""
-    if credentials is None or credentials.scheme.lower() != "bearer" or not hmac.compare_digest(
-        supplied,
-        settings.api_key,
+    bearer_token = ""
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        bearer_token = credentials.credentials
+    header_token = api_key or ""
+    if not (
+        hmac.compare_digest(bearer_token, settings.api_key)
+        or hmac.compare_digest(header_token, settings.api_key)
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

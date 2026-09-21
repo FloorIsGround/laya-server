@@ -15,7 +15,12 @@ for GPU memory.
 - `GET /docs` — interactive OpenAPI documentation
 
 All `/v1` endpoints require `Authorization: Bearer ...` when `LAYA_API_KEY` is
-set.
+set. They also accept the same token in the `X-API-Key` header.
+
+In the `/docs` web UI, select **Authorize** near the top of the page and enter
+the token under either `BearerAuth` or `ApiKeyAuth`. Enter only the token for
+`BearerAuth`; Swagger adds the `Bearer` prefix automatically. Authorization is
+retained across page reloads in that browser.
 
 ## Request example
 
