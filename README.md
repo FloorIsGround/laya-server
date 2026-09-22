@@ -10,6 +10,7 @@ for GPU memory.
 - `GET /health` — process liveness; no authentication required
 - `GET /ready` — model readiness; no authentication required
 - `GET /v1/model-info` — loaded checkpoint and runtime information
+- `GET /v1/worker-status` — authenticated gateway worker status and load counters
 - `POST /v1/systemone` — Laya-compatible typed inference
 - `POST /v1/evaluate` — compatibility alias for `/v1/systemone`
 - `GET /docs` — interactive OpenAPI documentation
@@ -75,11 +76,29 @@ The service reads these environment variables:
 | `LAYA_MODEL` | `convaiinnovations/laya` | Hub ID or local checkpoint path |
 | `LAYA_SUBFOLDER` | unset | Optional bundled checkpoint subfolder |
 | `LAYA_DEVICE` | `cpu` | PyTorch device |
-| `LAYA_API_KEY` | unset | Bearer token protecting `/v1` |
+| `LAYA_API_KEY` | required | Bearer token protecting `/v1`; startup fails when omitted |
 | `LAYA_CONCURRENCY` | `1` | Simultaneous model calls per process |
 | `LAYA_QUEUE_CAPACITY` | `64` | Waiting requests per process |
 | `LAYA_QUEUE_TIMEOUT_SECONDS` | `30` | Maximum queue wait |
 | `LAYA_TORCH_THREADS` | `12` | CPU threads used by this process |
+| `LAYA_WORKER_ID` | `laya-worker` | Stable deployment identity reported to gateways |
+| `LAYA_REQUIRE_CONFIGURED_DEVICE` | `true` | Return unready if the live device drifts from `LAYA_DEVICE` |
+
+## Gateway worker protocol
+
+Worker protocol version 1 adds request-correlation headers to every response:
+`X-Request-ID`, `X-Laya-Worker-ID`, `X-Laya-Worker-Instance`, and
+`X-Laya-Protocol-Version`. A valid printable `X-Request-ID` supplied by the
+gateway is echoed; otherwise the worker generates a UUID.
+
+`/v1/worker-status` reports configured capacity, live in-flight/executing/queued
+counts, cumulative completion/failure/rejection counters, actual model device,
+and a process-instance UUID that changes after restart. Counters are process
+local and reset with that instance UUID.
+
+For GPU deployments, set `LAYA_REQUIRE_CONFIGURED_DEVICE=true`. Laya can fall
+back to CPU after a CUDA memory failure; strict readiness makes that degraded
+worker return 503 instead of continuing to receive gateway traffic.
 
 For CPU serving, change process count and PyTorch thread count together. For
 example, two Uvicorn workers should start near six Torch threads each to avoid
