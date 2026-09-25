@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -70,6 +71,7 @@ class Settings:
     queue_capacity = _positive_int("LAYA_QUEUE_CAPACITY", 64)
     queue_timeout = _positive_float("LAYA_QUEUE_TIMEOUT_SECONDS", 30.0)
     torch_threads = _positive_int("LAYA_TORCH_THREADS", 12)
+    max_context = _positive_int("LAYA_MAX_CONTEXT", 512)
     worker_id = os.getenv("LAYA_WORKER_ID", "laya-worker")
     require_configured_device = _boolean("LAYA_REQUIRE_CONFIGURED_DEVICE", True)
 
@@ -83,6 +85,8 @@ def _validate_runtime_settings() -> None:
         raise RuntimeError("LAYA_WORKER_ID must be 1-128 printable ASCII characters")
     if not settings.api_key:
         raise RuntimeError("LAYA_API_KEY is required")
+    if not 256 <= settings.max_context <= 8192:
+        raise RuntimeError("LAYA_MAX_CONTEXT must be between 256 and 8192")
 
 
 class StrictModel(BaseModel):
@@ -166,6 +170,7 @@ class SystemOneRequest(StrictModel):
 
 class Runtime:
     agent: Any | None = None
+    tokenizer_fingerprint: str | None = None
     executor: ThreadPoolExecutor | None = None
     execution_slots: asyncio.Semaphore | None = None
     admission_slots: asyncio.Semaphore | None = None
@@ -227,11 +232,16 @@ def _load_agent() -> Any:
     except RuntimeError:
         # PyTorch permits setting inter-op threads only before parallel work starts.
         pass
-    return laya.load(
+    agent = laya.load(
         settings.model,
         device=settings.device,
         subfolder=settings.subfolder,
     )
+    positions = agent.model.encoder.config.max_position_embeddings
+    if settings.max_context > positions:
+        raise RuntimeError(f"LAYA_MAX_CONTEXT exceeds encoder capacity ({positions})")
+    agent.cfg["max_len"] = settings.max_context
+    return agent
 
 
 @asynccontextmanager
@@ -244,6 +254,7 @@ async def lifespan(_: FastAPI):
     runtime.completed_total = 0
     runtime.failed_total = 0
     runtime.queue_rejected_total = 0
+    runtime.tokenizer_fingerprint = None
     LOGGER.info(
         "loading Laya model=%s subfolder=%s device=%s",
         settings.model,
@@ -258,12 +269,17 @@ async def lifespan(_: FastAPI):
         max_workers=settings.concurrency,
         thread_name_prefix="laya-inference",
     )
-    runtime.agent = await asyncio.to_thread(_load_agent)
+    agent = await asyncio.to_thread(_load_agent)
+    runtime.agent = agent
+    runtime.tokenizer_fingerprint = hashlib.sha256(
+        agent.tok.backend_tokenizer.to_str().encode("utf-8")
+    ).hexdigest()
     LOGGER.info("Laya model ready on %s", runtime.agent.device)
     try:
         yield
     finally:
         runtime.agent = None
+        runtime.tokenizer_fingerprint = None
         if runtime.executor is not None:
             runtime.executor.shutdown(wait=True, cancel_futures=True)
         runtime.executor = None
@@ -475,6 +491,9 @@ async def worker_status() -> dict[str, Any]:
         "service_version": _service_version(),
         "laya_version": metadata.version("laya"),
         "model": settings.model,
+        "max_context": runtime.agent.cfg.get("max_len") if runtime.agent is not None else None,
+        "head_max_length": runtime.agent.cfg.get("head_max_len") if runtime.agent is not None else None,
+        "tokenizer_fingerprint": runtime.tokenizer_fingerprint,
         "desired_device": settings.device,
         "actual_device": actual_device,
         "dtype": dtype,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 from threading import Event
+from types import SimpleNamespace
 
 import server
 
@@ -11,6 +12,7 @@ class FakeAgent:
     device = "cpu"
     dtype = "torch.float32"
     cfg = {"max_len": 512, "head_max_len": 192}
+    model: object | None = None
 
     def predict(self, state, questions):
         assert state == {"body": "refund me"}
@@ -295,6 +297,7 @@ async def test_worker_status_is_authenticated_and_reports_runtime(monkeypatch):
     monkeypatch.setattr(server.settings, "api_key", "test-secret")
     monkeypatch.setattr(server.settings, "worker_id", "laya-test")
     monkeypatch.setattr(server.runtime, "agent", FakeAgent())
+    monkeypatch.setattr(server.runtime, "tokenizer_fingerprint", "a" * 64)
     async with client(authenticated=False) as test_client:
         assert (await test_client.get("/v1/worker-status")).status_code == 401
         response = await test_client.get(
@@ -308,6 +311,9 @@ async def test_worker_status_is_authenticated_and_reports_runtime(monkeypatch):
     assert body["worker_id"] == "laya-test"
     assert body["actual_device"] == "cpu"
     assert body["capacity"] == server.settings.concurrency
+    assert body["max_context"] == 512
+    assert body["head_max_length"] == 192
+    assert body["tokenizer_fingerprint"] == "a" * 64
     assert body["inflight"] == 0
     assert body["executing"] == 0
     assert body["queued"] == 0
@@ -316,6 +322,25 @@ async def test_worker_status_is_authenticated_and_reports_runtime(monkeypatch):
     assert body["queue_rejected_total"] == 0
     assert body["uptime_seconds"] >= 0
     assert len(body["instance_id"]) == 36
+
+
+def test_context_override_is_applied_to_loaded_agent(monkeypatch):
+    agent = FakeAgent()
+    agent.cfg = {"max_len": 512, "head_max_len": 192}
+    agent.model = SimpleNamespace(encoder=SimpleNamespace(config=SimpleNamespace(max_position_embeddings=8192)))
+    monkeypatch.setattr(server.settings, "max_context", 4096)
+    monkeypatch.setattr(server.laya, "load", lambda *args, **kwargs: agent)
+    assert server._load_agent().cfg["max_len"] == 4096
+
+
+def test_context_override_rejects_unsupported_encoder(monkeypatch):
+    agent = FakeAgent()
+    agent.cfg = {"max_len": 512, "head_max_len": 192}
+    agent.model = SimpleNamespace(encoder=SimpleNamespace(config=SimpleNamespace(max_position_embeddings=2048)))
+    monkeypatch.setattr(server.settings, "max_context", 4096)
+    monkeypatch.setattr(server.laya, "load", lambda *args, **kwargs: agent)
+    with pytest.raises(RuntimeError, match="exceeds encoder capacity"):
+        server._load_agent()
 
 
 @pytest.mark.anyio

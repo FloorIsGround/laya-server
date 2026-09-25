@@ -81,6 +81,7 @@ The service reads these environment variables:
 | `LAYA_QUEUE_CAPACITY` | `64` | Waiting requests per process |
 | `LAYA_QUEUE_TIMEOUT_SECONDS` | `30` | Maximum queue wait |
 | `LAYA_TORCH_THREADS` | `12` | CPU threads used by this process |
+| `LAYA_MAX_CONTEXT` | `512` | Per-question encoder window (256-8192, capped by encoder capacity) |
 | `LAYA_WORKER_ID` | `laya-worker` | Stable deployment identity reported to gateways |
 | `LAYA_REQUIRE_CONFIGURED_DEVICE` | `true` | Return unready if the live device drifts from `LAYA_DEVICE` |
 
@@ -93,8 +94,14 @@ gateway is echoed; otherwise the worker generates a UUID.
 
 `/v1/worker-status` reports configured capacity, live in-flight/executing/queued
 counts, cumulative completion/failure/rejection counters, actual model device,
+max context, question/option head limit, tokenizer fingerprint,
 and a process-instance UUID that changes after restart. Counters are process
 local and reset with that instance UUID.
+
+The context override is applied after the checkpoint loads; it does not change
+the question/option head budget or calibration. A longer window costs more GPU
+memory and time, especially with multiple questions. Benchmark and evaluate
+long-document accuracy before changing production configuration.
 
 For GPU deployments, set `LAYA_REQUIRE_CONFIGURED_DEVICE=true`. Laya can fall
 back to CPU after a CUDA memory failure; strict readiness makes that degraded
