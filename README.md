@@ -55,7 +55,15 @@ retained across page reloads in that browser.
 ```bash
 uv sync --group dev
 uv run pytest
-LAYA_DEVICE=cpu uv run uvicorn server:app --host 127.0.0.1 --port 8000
+```
+
+Before serving requests, copy `.env.example` to `.env`, restrict it with
+`chmod 600 .env`, and replace the API-key placeholder with a long random token.
+Choose a unique `LAYA_WORKER_ID` for each deployment; it must match that
+worker's entry in the gateway configuration. The `.env` file is ignored by Git.
+
+```bash
+LAYA_DEVICE=cpu uv run --env-file .env uvicorn server:app --host 127.0.0.1 --port 8000
 ```
 
 The model is loaded during application startup. Do not enable Uvicorn reload in
@@ -128,11 +136,14 @@ resident model.
 
 ## systemd user service
 
-The unit in `deploy/laya-api.service` binds to port 8000 with one process and 12
-Torch threads. Install and start it with:
+The unit in `deploy/laya-api.service` assumes a checkout at `~/laya-server`;
+adjust its paths if you clone elsewhere. It loads `.env` and binds to port 8000
+on all interfaces with one process and 12 Torch threads by default. Prepare
+`.env` as described above and restrict network access to your trusted LAN.
+Install and start it from the checkout with:
 
 ```bash
-systemctl --user link "$HOME/laya-server/deploy/laya-api.service"
+install -Dm644 deploy/laya-api.service ~/.config/systemd/user/laya-api.service
 systemctl --user daemon-reload
 systemctl --user enable --now laya-api.service
 ```
@@ -146,10 +157,22 @@ sudo loginctl enable-linger "$USER"
 
 ## Calling the service
 
+Set `LAYA_API_KEY` in your shell to the worker's token before calling it.
+This example addresses a worker running on the same machine; substitute your
+worker's address when calling it over the LAN.
+
 ```bash
 curl --fail-with-body \
   -H "Authorization: Bearer $LAYA_API_KEY" \
   -H "Content-Type: application/json" \
-  --data @request.json \
+  --data @tests/fixtures/request.json \
   http://127.0.0.1:8000/v1/systemone
 ```
+
+## License
+
+Copyright 2026 FloorIsGround. Original project code is licensed under the
+[Apache License, Version 2.0](LICENSE).
+
+The Laya runtime and model weights are obtained separately and retain their
+upstream licenses. This repository does not bundle model weights.
